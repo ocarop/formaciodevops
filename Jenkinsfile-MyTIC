@@ -1,0 +1,75 @@
+node {
+   props = readProperties file:'src/main/resources/application-dev.properties'
+   propsprod = readProperties file:'src/main/resources/application-prod.properties'
+}
+
+  
+pipeline {
+  agent any
+  triggers { pollSCM('H/2 * * * *') }
+  
+  environment {
+    //Use Pipeline Utility Steps plugin to read information from pom.xml into env variables
+    ARTIFACT_ID = readMavenPom().getArtifactId()
+  }
+
+
+  stages {
+    stage('build') {
+      steps {
+        sh 'mvn -B -DskipTests -Pdev clean package'
+      }
+    }
+    stage('test') {
+      agent any
+      steps {
+        sh 'mvn test -Pdev'
+      }
+    }  
+    stage('docker build') {
+      steps {
+        sh "docker build -t gava/image-${ARTIFACT_ID}-dev --build-arg PORT=${props.'server.port'} --build-arg JAR_NAME=${ARTIFACT_ID}.jar --build-arg DOMAIN=${props.'domain'} ."
+      }
+    }
+    stage('docker stop container') {
+      steps {
+	       sh "docker stop cont-${ARTIFACT_ID}-dev || true && docker rm cont-${ARTIFACT_ID}-dev || true"
+	    }
+	}    
+    stage('docker start container') {
+      steps {
+	       sh "docker run --mount source=java-shared-classes,target=/cache --name=cont-${ARTIFACT_ID}-dev -P -d -v /usr/ad-service:/usr/ad-service -v /usr/auditoria:/usr/auditoria -m 600m --restart unless-stopped gava/image-${ARTIFACT_ID}-dev"
+	    }
+	}    
+    stage ('Promotion') {
+      steps {
+	    timeout(time: 1, unit: 'HOURS') {
+	      input 'Desplegar en produccion?'
+	    }
+	  }  
+    }
+
+    stage('build Produccion') {
+      steps {
+        sh 'mvn -B -DskipTests -Pprod clean package'
+      }
+    }
+
+    stage('docker build Produccion') {
+      steps {
+        sh "docker build -t gava/image-${ARTIFACT_ID}-prod --build-arg PORT=${propsprod.'server.port'} --build-arg JAR_NAME=${ARTIFACT_ID}.jar --build-arg DOMAIN=${propsprod.'domain'} ."
+      }
+    }
+    stage('docker stop container Produccion') {
+      steps {
+	       sh "docker stop cont-${ARTIFACT_ID}-prod || true && docker rm cont-${ARTIFACT_ID}-prod || true"
+	    }
+	}    
+    stage('docker start container Produccion') {
+      steps {
+	       sh "docker run --mount source=java-shared-classes,target=/cache --name=cont-${ARTIFACT_ID}-prod -P -d -v /usr/ad-service:/usr/ad-service -v /usr/auditoria:/usr/auditoria --memory 1500m --memory-swap 1500m --memory-swappiness 0 --restart unless-stopped gava/image-${ARTIFACT_ID}-prod"
+	    }
+	}    
+	
+  }
+}
